@@ -1,0 +1,21 @@
+name: Daily Green
+on:
+  schedule:
+    - cron: '0 17 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  daily-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Append daily log
+        run: date -u +"%Y-%m-%d %H:%M UTC" >> log.md
+      - name: Commit and push
+        run: |
+          git config user.name "ilovejym"
+          git config user.email "355382654+ilovejym@users.noreply.github.com"
+          git add log.md
+          git commit -m "Daily green $(date -u +%F)" || exit 0
+          git push
