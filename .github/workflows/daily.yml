@@ -42,7 +42,8 @@ jobs:
 
           SLOT=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            SLOT="${{ github.inputs.slot }}"
+            SLOT="${{ inputs.slot }}"
+            [ -z "$SLOT" ] && SLOT="manual"
           elif [ "$NOW_M" -ge $((21 * 60)) ]; then
             # 21:00 EST review: top up to 2 green commits for the day.
             while [ "$COUNT" -lt 2 ]; do
