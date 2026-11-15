@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run one green commit when due
+      - name: Run green commits when due
         run: |
           set -e
           TODAY=$(TZ=America/New_York date +%F)
@@ -38,24 +38,39 @@ jobs:
 
           [ -f log.md ] || echo '# Daily log' > log.md
           COUNT=$(grep -cE "^$TODAY .* \(morning|afternoon|catchup\)$" log.md || true)
-          echo "Green commits today so far: $COUNT"
+          echo "Scheduled runs today so far: $COUNT"
+
+          # Each scheduled run makes 5 commits (10/day) so the day's
+          # square shows dark green. Only the first line of a batch
+          # carries the slot marker, so COUNT still counts runs, not commits.
+          make_commits() {
+            local slot="$1"
+            local i
+            git config user.name "ilovejym"
+            git config user.email "355382654+ilovejym@users.noreply.github.com"
+            for i in 1 2 3 4 5; do
+              if [ "$i" -eq 1 ]; then
+                echo "$(date -u +"%Y-%m-%d %H:%M UTC") ($slot)" >> log.md
+              else
+                echo "$(date -u +"%Y-%m-%d %H:%M UTC") $slot extra $((i - 1))/4" >> log.md
+              fi
+              git add log.md
+              git commit -m "Daily green $TODAY ($slot $i/5)"
+            done
+            git push
+          }
 
           SLOT=""
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             SLOT="${{ inputs.slot }}"
             [ -z "$SLOT" ] && SLOT="manual"
           elif [ "$NOW_M" -ge $((21 * 60)) ]; then
-            # 21:00 EST review: top up to 2 green commits for the day.
+            # 21:00 EST review: top up to 2 scheduled runs for the day.
             while [ "$COUNT" -lt 2 ]; do
-              echo "$(date -u +"%Y-%m-%d %H:%M UTC") (catchup)" >> log.md
-              git config user.name "ilovejym"
-              git config user.email "355382654+ilovejym@users.noreply.github.com"
-              git add log.md
-              git commit -m "Daily green $TODAY (catchup)"
-              git push
+              make_commits "catchup"
               COUNT=$((COUNT + 1))
             done
-            echo "Review done: $COUNT green commits today"
+            echo "Review done: $COUNT scheduled runs today"
             exit 0
           elif [ "$COUNT" -lt 2 ] && [ "$NOW_M" -ge "$MORNING_M" ] && ! grep -q "^$TODAY .* (morning)$" log.md; then
             SLOT="morning"
@@ -68,10 +83,5 @@ jobs:
             exit 0
           fi
 
-          echo "$(date -u +"%Y-%m-%d %H:%M UTC") ($SLOT)" >> log.md
-          git config user.name "ilovejym"
-          git config user.email "355382654+ilovejym@users.noreply.github.com"
-          git add log.md
-          git commit -m "Daily green $TODAY ($SLOT)"
-          git push
-          echo "Committed $SLOT run for $TODAY"
+          make_commits "$SLOT"
+          echo "Committed $SLOT run for $TODAY (5 commits)"
