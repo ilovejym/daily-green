@@ -37,7 +37,7 @@ jobs:
           echo "Plan: morning $(printf '%02d:%02d' "$MH" "$MM") EST, afternoon $(printf '%02d:%02d' "$AH" "$AM") EST"
 
           [ -f log.md ] || echo '# Daily log' > log.md
-COUNT=$(grep -cE "^$TODAY .* \(morning|afternoon|catchup\)$" log.md || true)
+          COUNT=$(grep -cE "^$TODAY .* \(morning|afternoon|catchup\)$" log.md || true)
           echo "Green commits today so far: $COUNT"
 
           SLOT=""
