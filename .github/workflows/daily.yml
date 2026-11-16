@@ -24,25 +24,34 @@ jobs:
           NOW_M=$((10#$NOW_H * 60 + 10#$NOW_MI))
           echo "Today $TODAY, now EST $(TZ=America/New_York date +%H:%M)"
 
-          # One random point per window, derived from the date so every
-          # hourly run of the same day agrees on the plan.
-          SEED=$(TZ=America/New_York date -d "$TODAY" +%s)
-          RANDOM=$SEED
-          MH=$((8 + RANDOM % 5))
-          MM=$((RANDOM % 60))
-          AH=$((14 + RANDOM % 5))
-          AM=$((RANDOM % 60))
-          MORNING_M=$((MH * 60 + MM))
-          AFTERNOON_M=$((AH * 60 + AM))
-          echo "Plan: morning $(printf '%02d:%02d' "$MH" "$MM") EST, afternoon $(printf '%02d:%02d' "$AH" "$AM") EST"
-
-          [ -f log.md ] || echo '# Daily log' > log.md
-          COUNT=$(grep -cE "^$TODAY .* \(morning|afternoon|catchup\)$" log.md || true)
-          echo "Scheduled runs today so far: $COUNT"
+          # The day's run times are drawn once each morning at 06:00 EST
+          # and stored in schedule.json, so every hourly run agrees on
+          # the plan without re-drawing. The draw uses unseeded $RANDOM.
+          SCHEDULE_FILE="schedule.json"
+          read_plan() {
+            MORNING_T=$(sed -n 's/.*"morning":"\([0-9:]*\)".*/\1/p' "$SCHEDULE_FILE")
+            AFTERNOON_T=$(sed -n 's/.*"afternoon":"\([0-9:]*\)".*/\1/p' "$SCHEDULE_FILE")
+          }
+          draw_schedule() {
+            MH=$((8 + RANDOM % 5))
+            MM=$((RANDOM % 60))
+            AH=$((14 + RANDOM % 5))
+            AM=$((RANDOM % 60))
+            printf '{"date":"%s","morning":"%02d:%02d","afternoon":"%02d:%02d"}\n' "$TODAY" "$MH" "$MM" "$AH" "$AM" > "$SCHEDULE_FILE"
+            git config user.name "ilovejym"
+            git config user.email "355382654+ilovejym@users.noreply.github.com"
+            git add "$SCHEDULE_FILE"
+            git commit -m "Draw daily schedule $TODAY"
+            git push || { echo "Push failed, another hourly run will retry the draw"; exit 0; }
+            echo "Drew today's plan: morning $(printf '%02d:%02d' "$MH" "$MM") EST, afternoon $(printf '%02d:%02d' "$AH" "$AM") EST"
+          }
 
           # Each scheduled run makes 5 commits (10/day) so the day's
           # square shows dark green. Only the first line of a batch
           # carries the slot marker, so COUNT still counts runs, not commits.
+          # Log lines are stamped in New York time so COUNT never leaks
+          # across days (UTC stamps used to spill the 21:00 catchup into
+          # the next day's count).
           make_commits() {
             local slot="$1"
             local i
@@ -50,9 +59,9 @@ jobs:
             git config user.email "355382654+ilovejym@users.noreply.github.com"
             for i in 1 2 3 4 5; do
               if [ "$i" -eq 1 ]; then
-                echo "$(date -u +"%Y-%m-%d %H:%M UTC") ($slot)" >> log.md
+                echo "$TODAY $(TZ=America/New_York date +%H:%M) EST ($slot)" >> log.md
               else
-                echo "$(date -u +"%Y-%m-%d %H:%M UTC") $slot extra $((i - 1))/4" >> log.md
+                echo "$TODAY $(TZ=America/New_York date +%H:%M) EST $slot extra $((i - 1))/4" >> log.md
               fi
               git add log.md
               git commit -m "Daily green $TODAY ($slot $i/5)"
@@ -60,11 +69,48 @@ jobs:
             git push
           }
 
-          SLOT=""
+          # Manual runs (workflow_dispatch) skip the daily plan entirely.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             SLOT="${{ inputs.slot }}"
             [ -z "$SLOT" ] && SLOT="manual"
-          elif [ "$NOW_M" -ge $((21 * 60)) ]; then
+            make_commits "$SLOT"
+            echo "Committed $SLOT run for $TODAY (5 commits)"
+            exit 0
+          fi
+
+          # Read today's plan; draw it at the first hourly run at or
+          # after 06:00 EST if none exists yet.
+          if [ -f "$SCHEDULE_FILE" ] && grep -q "\"date\":\"$TODAY\"" "$SCHEDULE_FILE"; then
+            read_plan
+          elif [ "$NOW_M" -ge $((6 * 60)) ]; then
+            # Re-check the remote in case another run already drew them.
+            git fetch origin main --quiet || true
+            if git show origin/main:"$SCHEDULE_FILE" 2>/dev/null | grep -q "\"date\":\"$TODAY\""; then
+              git checkout origin/main -- "$SCHEDULE_FILE"
+              read_plan
+            else
+              draw_schedule
+              read_plan
+            fi
+          else
+            echo "Before 06:00 EST, no plan yet for today"
+            exit 0
+          fi
+          MORNING_M=$((10#${MORNING_T%%:*} * 60 + 10#${MORNING_T##*:}))
+          AFTERNOON_M=$((10#${AFTERNOON_T%%:*} * 60 + 10#${AFTERNOON_T##*:}))
+          echo "Plan: morning $MORNING_T EST, afternoon $AFTERNOON_T EST"
+
+          # COUNT counts marker lines only. The pattern must group the
+          # alternation inside the literal parens: without the group,
+          # ERE precedence turns it into "^TODAY ... (morning" OR
+          # bare "afternoon" OR "catchup)$", which counts every
+          # "afternoon extra" line and can suppress a needed catchup.
+          [ -f log.md ] || echo '# Daily log' > log.md
+          COUNT=$(grep -cE "^$TODAY .* \((morning|afternoon|catchup)\)$" log.md || true)
+          echo "Scheduled runs today so far: $COUNT"
+
+          SLOT=""
+          if [ "$NOW_M" -ge $((21 * 60)) ]; then
             # 21:00 EST review: top up to 2 scheduled runs for the day.
             while [ "$COUNT" -lt 2 ]; do
               make_commits "catchup"
@@ -72,6 +118,10 @@ jobs:
             done
             echo "Review done: $COUNT scheduled runs today"
             exit 0
+          # Note: these use plain grep (BRE), where bare parens are
+          # literal, so (morning) matches the marker line exactly.
+          # Do not "fix" them to \(...\) — in BRE that means grouping
+          # and the line ending in ")" would no longer match.
           elif [ "$COUNT" -lt 2 ] && [ "$NOW_M" -ge "$MORNING_M" ] && ! grep -q "^$TODAY .* (morning)$" log.md; then
             SLOT="morning"
           elif [ "$COUNT" -lt 2 ] && [ "$NOW_M" -ge "$AFTERNOON_M" ] && ! grep -q "^$TODAY .* (afternoon)$" log.md; then
